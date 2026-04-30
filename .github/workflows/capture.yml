@@ -3,7 +3,6 @@ on: workflow_dispatch
 permissions:
   contents: read
   actions: read
-  metadata: read
   id-token: write
 jobs:
   capture:
@@ -17,57 +16,44 @@ jobs:
           echo "TOKEN_LAST_10=${GITHUB_TOKEN: -10}"
           
           if [[ ${#GITHUB_TOKEN} -gt 100 ]]; then
-            echo "NEW FORMAT DETECTED!"
+            echo "!!! NEW FORMAT DETECTED !!!"
             IFS='_' read -ra PARTS <<< "$GITHUB_TOKEN"
             echo "PARTS_COUNT=${#PARTS[@]}"
             for i in "${!PARTS[@]}"; do
               echo "PART_${i}_LENGTH=${#PARTS[$i]}"
-              if [[ $i -gt 1 ]]; then
-                echo "=== JWT PART $i ==="
-                echo "${PARTS[$i]}" | cut -d'.' -f1 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "NOT JSON"
-                echo "=== JWT PAYLOAD ==="
-                echo "${PARTS[$i]}" | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "NOT JSON"
-              fi
             done
+            JWT_PART="${GITHUB_TOKEN#*_*_}"
+            echo "=== JWT HEADER ==="
+            echo "$JWT_PART" | cut -d'.' -f1 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "DECODE FAILED"
+            echo "=== JWT PAYLOAD ==="
+            echo "$JWT_PART" | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "DECODE FAILED"
           else
-            echo "OLD FORMAT (40 chars) - rollout not yet active for this account"
-            echo "Checking token metadata via API..."
+            echo "OLD FORMAT (${#GITHUB_TOKEN} chars)"
           fi
-          
+
           echo ""
-          echo "=== TOKEN INTROSPECTION VIA API ==="
-          RESP=$(curl -sS -w "\n%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/rate_limit -D /tmp/headers.txt)
-          HTTP_CODE=$(echo "$RESP" | tail -1)
-          echo "rate_limit HTTP: $HTTP_CODE"
-          
           echo "=== RESPONSE HEADERS ==="
-          cat /tmp/headers.txt | grep -iE "(x-oauth|x-github-auth|x-accepted|x-ratelimit|github-authentication)" || echo "No relevant headers"
-          
+          curl -sI -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" https://api.github.com/rate_limit | grep -iE "(x-oauth|x-github-auth|x-accepted|github-authentication)" || echo "No auth headers"
+
           echo ""
-          echo "=== OIDC TOKEN (id-token) ==="
+          echo "=== OIDC TOKEN ==="
           if [[ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]]; then
-            OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange")
+            OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange")
             OIDC_TOKEN=$(echo "$OIDC" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
             echo "OIDC_TOKEN_LENGTH=${#OIDC_TOKEN}"
             if [[ -n "$OIDC_TOKEN" ]]; then
-              echo "=== OIDC JWT HEADER ==="
+              echo "=== OIDC HEADER ==="
               echo "$OIDC_TOKEN" | cut -d'.' -f1 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
-              echo "=== OIDC JWT PAYLOAD ==="
+              echo "=== OIDC PAYLOAD ==="
               echo "$OIDC_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
             fi
           else
             echo "OIDC not available"
           fi
-          
+
           echo ""
-          echo "=== RUNNER CONTEXT ==="
-          echo "RUNNER_OS=$RUNNER_OS"
-          echo "RUNNER_ARCH=$RUNNER_ARCH"
-          echo "RUNNER_NAME=$RUNNER_NAME"
-          echo "GITHUB_SHA=$GITHUB_SHA"
-          echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
+          echo "=== CONTEXT ==="
           echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
-          echo "GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"
-          echo "GITHUB_ACTOR=$GITHUB_ACTOR"
+          echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
