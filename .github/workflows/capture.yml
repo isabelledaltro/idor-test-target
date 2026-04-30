@@ -1,18 +1,73 @@
-name: Token JWT Capture
+name: Token JWT Deep Capture
 on: workflow_dispatch
+permissions:
+  contents: read
+  actions: read
+  metadata: read
+  id-token: write
 jobs:
   capture:
     runs-on: ubuntu-latest
     steps:
-      - name: Capture Token
+      - name: Deep Token Analysis
         run: |
+          echo "=== GITHUB_TOKEN ANALYSIS ==="
           echo "TOKEN_LENGTH=${#GITHUB_TOKEN}"
-          echo "TOKEN_PREFIX=${GITHUB_TOKEN:0:20}..."
-          IFS='_' read -ra PARTS <<< "$GITHUB_TOKEN"
-          echo "PREFIX=${PARTS[0]}_"
-          echo "APPID=${PARTS[1]}"
-          echo "JWT=${PARTS[2]}"
-          echo "${PARTS[2]}" | cut -d'.' -f1 | base64 -d 2>/dev/null | jq .
-          echo "${PARTS[2]}" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq .
+          echo "TOKEN_FIRST_30=${GITHUB_TOKEN:0:30}"
+          echo "TOKEN_LAST_10=${GITHUB_TOKEN: -10}"
+          
+          if [[ ${#GITHUB_TOKEN} -gt 100 ]]; then
+            echo "NEW FORMAT DETECTED!"
+            IFS='_' read -ra PARTS <<< "$GITHUB_TOKEN"
+            echo "PARTS_COUNT=${#PARTS[@]}"
+            for i in "${!PARTS[@]}"; do
+              echo "PART_${i}_LENGTH=${#PARTS[$i]}"
+              if [[ $i -gt 1 ]]; then
+                echo "=== JWT PART $i ==="
+                echo "${PARTS[$i]}" | cut -d'.' -f1 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "NOT JSON"
+                echo "=== JWT PAYLOAD ==="
+                echo "${PARTS[$i]}" | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "NOT JSON"
+              fi
+            done
+          else
+            echo "OLD FORMAT (40 chars) - rollout not yet active for this account"
+            echo "Checking token metadata via API..."
+          fi
+          
+          echo ""
+          echo "=== TOKEN INTROSPECTION VIA API ==="
+          RESP=$(curl -sS -w "\n%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/rate_limit -D /tmp/headers.txt)
+          HTTP_CODE=$(echo "$RESP" | tail -1)
+          echo "rate_limit HTTP: $HTTP_CODE"
+          
+          echo "=== RESPONSE HEADERS ==="
+          cat /tmp/headers.txt | grep -iE "(x-oauth|x-github-auth|x-accepted|x-ratelimit|github-authentication)" || echo "No relevant headers"
+          
+          echo ""
+          echo "=== OIDC TOKEN (id-token) ==="
+          if [[ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]]; then
+            OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange")
+            OIDC_TOKEN=$(echo "$OIDC" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value',''))" 2>/dev/null)
+            echo "OIDC_TOKEN_LENGTH=${#OIDC_TOKEN}"
+            if [[ -n "$OIDC_TOKEN" ]]; then
+              echo "=== OIDC JWT HEADER ==="
+              echo "$OIDC_TOKEN" | cut -d'.' -f1 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
+              echo "=== OIDC JWT PAYLOAD ==="
+              echo "$OIDC_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
+            fi
+          else
+            echo "OIDC not available"
+          fi
+          
+          echo ""
+          echo "=== RUNNER CONTEXT ==="
+          echo "RUNNER_OS=$RUNNER_OS"
+          echo "RUNNER_ARCH=$RUNNER_ARCH"
+          echo "RUNNER_NAME=$RUNNER_NAME"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
+          echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
+          echo "GITHUB_REPOSITORY_OWNER=$GITHUB_REPOSITORY_OWNER"
+          echo "GITHUB_ACTOR=$GITHUB_ACTOR"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
